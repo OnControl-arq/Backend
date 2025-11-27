@@ -1,6 +1,6 @@
 package pe.edu.upc.oncontrol.communication.application.internal.commandservice;
 
-import org.springframework.amqp.rabbit.core.RabbitTemplate; // <--- Importar RabbitTemplate
+import org.springframework.amqp.rabbit.core.RabbitTemplate; // <--- Importar
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import pe.edu.upc.oncontrol.billing.application.acl.SubscriptionAcl;
@@ -10,7 +10,7 @@ import pe.edu.upc.oncontrol.communication.domain.model.commands.SendChatMessageC
 import pe.edu.upc.oncontrol.communication.domain.services.ChatMessageCommandService;
 import pe.edu.upc.oncontrol.communication.infrastructure.persisntence.jpa.repositories.ChatMessageRepository;
 import pe.edu.upc.oncontrol.profile.application.acl.ProfileAccessAcl;
-import pe.edu.upc.oncontrol.shared.infraestructure.broker.RabbitMQConfig; // <--- Importar tu Config
+import pe.edu.upc.oncontrol.shared.infraestructure.broker.RabbitMQConfig; // <--- Importar Config
 
 import java.util.Map;
 import java.util.Optional;
@@ -24,7 +24,6 @@ public class ChatMessageCommandServiceImpl implements ChatMessageCommandService 
     private final SimpMessagingTemplate messagingTemplate;
     private final RabbitTemplate rabbitTemplate; // <--- Inyección del Broker
 
-    // Constructor actualizado con RabbitTemplate
     public ChatMessageCommandServiceImpl(ChatMessageRepository chatMessageRepository,
                                          ProfileAccessAcl profileAccessAcl,
                                          SubscriptionAcl subscriptionAcl,
@@ -39,7 +38,7 @@ public class ChatMessageCommandServiceImpl implements ChatMessageCommandService 
 
     @Override
     public void handle(SendChatMessageCommand command) {
-        // 1. Validaciones (Igual que antes)
+        // 1. Validaciones
         boolean linkActive = profileAccessAcl.isLinkActive(command.doctorUuid(), command.patientUuid());
         if (!linkActive) throw new IllegalStateException("Patient and Doctor connection is not active.");
 
@@ -48,7 +47,7 @@ public class ChatMessageCommandServiceImpl implements ChatMessageCommandService 
             throw new IllegalStateException("Doctor plan does not allow messaging.");
         }
 
-        // 2. Guardar mensaje en Base de Datos
+        // 2. Guardar en BD (Operación Crítica)
         ChatMessage message = new ChatMessage();
         message.setDoctorUuid(command.doctorUuid());
         message.setPatientUuid(command.patientUuid());
@@ -64,38 +63,29 @@ public class ChatMessageCommandServiceImpl implements ChatMessageCommandService 
         String destination = "/topic/chat." + command.doctorUuid() + "." + command.patientUuid();
         messagingTemplate.convertAndSend(destination, message);
 
-        // 4. PUBLICAR EVENTO AL BROKER (Disponibilidad/Interoperabilidad)
-        // Esto permite enviar notificaciones push/email de forma asíncrona
+        // 4. ENVIAR AL BROKER (Disponibilidad)
+        // Esta parte es asíncrona. Si falla, el usuario NO recibe error.
         try {
-            // Determinamos quién debe recibir la notificación (el otro usuario)
             String recipientUuid = command.senderRole().equals("DOCTOR")
                     ? command.patientUuid().toString()
                     : command.doctorUuid().toString();
 
-            // Creamos un resumen del mensaje para la notificación
-            String preview = command.content() != null && command.content().length() > 40
-                    ? command.content().substring(0, 40) + "..."
-                    : command.content();
-
-            // Creamos el objeto del evento
+            // Datos para la notificación
             var eventData = Map.of(
                     "type", "CHAT_MESSAGE_SENT",
                     "recipientUuid", recipientUuid,
-                    "preview", preview != null ? preview : "Archivo adjunto"
+                    "content", command.content() != null ? command.content() : "[Archivo]"
             );
 
-            // Enviamos al Exchange usando la Routing Key definida en la config
             rabbitTemplate.convertAndSend(
                     RabbitMQConfig.EXCHANGE_MAIN,
                     RabbitMQConfig.ROUTING_KEY_CHAT,
                     eventData
             );
-
-            System.out.println("🐰 [Broker] Notificación de chat enviada para: " + recipientUuid);
+            System.out.println("🐰 [Broker] Mensaje encolado para notificar a: " + recipientUuid);
 
         } catch (Exception e) {
-            // Si el broker falla, solo mostramos el error. El chat NO se rompe.
-            System.err.println("⚠️ Error enviando al broker: " + e.getMessage());
+            System.err.println("⚠️ Broker no disponible. El chat sigue funcionando, pero no hubo notificación.");
         }
     }
 }
